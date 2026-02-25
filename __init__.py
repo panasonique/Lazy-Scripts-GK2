@@ -277,6 +277,24 @@ def on_load_post_handler(dummy1, dummy2=None):
 
 # --- РЕГИСТРАЦИЯ ---
 
+# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТРИСОВКИ ЗАГОЛОВКА ---
+def draw_sub_header(self, context):
+    layout = self.layout
+    # Берем очищенное имя, которое мы сохранили в классе
+    label = getattr(self, "base_label", "")
+    prop_id = getattr(self, "linked_prop", None)
+    
+    if prop_id:
+        var_item = context.scene.my_addon_vars.get(prop_id)
+        if var_item:
+            # Формат: Имя (1.00)
+            label = f"{label} ({var_item.value:.2f})"
+        else:
+            label = f"{label} (...)"
+            
+    layout.label(text=label)
+
+# --- РЕГИСТРАЦИЯ С ИСПРАВЛЕНИЕМ ЦВЕТА/ДУБЛЕЙ ---
 def register():
     bpy.utils.register_class(MyAddonVariable)
     bpy.utils.register_class(MY_OT_RunExternalScript)
@@ -287,16 +305,33 @@ def register():
         bpy.app.handlers.load_post.append(on_load_post_handler)
     
     if not os.path.exists(BASE_DIR): return
+    
     main_folders = sorted([d for d in os.listdir(BASE_DIR) if os.path.isdir(os.path.join(BASE_DIR, d)) and not d.startswith(('.', '__'))], key=get_sort_key)
+    
     for folder in main_folders:
         folder_path = os.path.join(BASE_DIR, folder)
         safe_folder = re.sub(r'\W+', '_', folder)
         main_id = f"MY_PT_{safe_folder}"
+        
+        main_prop_match = re.search(r'\{(.+?)\}', folder)
+        main_target_prop = main_prop_match.group(1) if main_prop_match else None
+        main_clean_label = clean_display_name(re.sub(r'\{.+?\}', '', folder)).strip()
+
+        # ИСПРАВЛЕНИЕ: bl_label = "" убирает белый системный текст
         main_cls = type(main_id, (bpy.types.Panel,), {
-            "bl_label": clean_display_name(folder), "bl_idname": main_id,
-            "bl_space_type": 'VIEW_3D', "bl_region_type": 'UI', "bl_category": "Lazy Scripts", "draw": lambda s, c: None
+            "bl_label": "", 
+            "bl_idname": main_id,
+            "bl_space_type": 'VIEW_3D',
+            "bl_region_type": 'UI',
+            "bl_category": "Lazy Scripts",
+            "base_label": main_clean_label,
+            "linked_prop": main_target_prop,
+            "draw_header": draw_sub_header, 
+            "draw": lambda s, c: None
         })
-        bpy.utils.register_class(main_cls); dynamic_classes.append(main_cls)
+
+        bpy.utils.register_class(main_cls)
+        dynamic_classes.append(main_cls)
         
         content = []
         for item in os.listdir(folder_path):
@@ -312,6 +347,7 @@ def register():
                 file_group = []
                 while i < len(content) and not content[i]['is_dir']:
                     file_group.append(content[i]['path']); i += 1
+                
                 g_id = f"MY_PT_G_{safe_folder}_{group_idx}"
                 g_cls = type(g_id, (bpy.types.Panel,), {
                     "bl_label": "", "bl_idname": g_id, "bl_parent_id": main_id,
@@ -320,33 +356,14 @@ def register():
                 })
                 bpy.utils.register_class(g_cls); dynamic_classes.append(g_cls); group_idx += 1
             else:
-                # 1. Извлекаем prop_id из имени папки {prop_id}
                 found_prop = re.search(r'\{(.+?)\}', item['name'])
                 target_prop = found_prop.group(1) if found_prop else None
-                
-                # 2. Очищаем имя для заголовка (убираем {id} и префиксы)
                 clean_label = clean_display_name(re.sub(r'\{.+?\}', '', item['name'])).strip()
 
-                # 3. ФОРМИРУЕМ БЕЗОПАСНЫЙ ID КЛАССА (исправление ошибки)
-                # Убираем всё лишнее, заменяем на _, и удаляем подчеркивания в конце
                 safe_name = re.sub(r'\W+', '_', item['name']).strip('_')
                 sub_id = f"MY_PT_{safe_name}"
 
-                def draw_sub_header(self, context):
-                    layout = self.layout
-                    # Используем getattr для безопасного получения атрибутов
-                    label = getattr(self, "base_label", "Panel")
-                    prop_id = getattr(self, "linked_prop", None)
-                    
-                    if prop_id:
-                        var_item = context.scene.my_addon_vars.get(prop_id)
-                        if var_item:
-                            # Формируем строку с числом
-                            label = f"{label} ({var_item.value:.2f})"
-                            
-                    layout.label(text=label)
-
-
+                # ИСПРАВЛЕНИЕ: bl_label = "" также для подпанелей
                 sub_cls = type(sub_id, (bpy.types.Panel,), {
                     "bl_label": "", 
                     "base_label": clean_label,
@@ -360,16 +377,12 @@ def register():
                     "draw_header": draw_sub_header,
                     "draw": draw_dynamic_section
                 })
-                bpy.utils.register_class(sub_cls)
-                dynamic_classes.append(sub_cls)
-                i += 1
-
-
-
+                bpy.utils.register_class(sub_cls); dynamic_classes.append(sub_cls); i += 1
     
     bpy.utils.register_class(MY_PT_Settings)
     bpy.app.timers.register(sync_addon_properties, first_interval=0.1)
     register_shortcuts()
+
 
 def unregister():
     unregister_shortcuts()
@@ -394,6 +407,10 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
+
+
+
 
 
 
