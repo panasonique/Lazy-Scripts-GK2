@@ -7,7 +7,7 @@ import textwrap
 bl_info = {
     "name": "Lazy Scripts",
     "author": "treety & Gemini (Google AI)",
-    "version": (3, 4, 2),
+    "version": (3, 4, 3), # Обновил версию
     "blender": (4, 0, 0),
     "category": "Interface",
 }
@@ -16,54 +16,12 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 addon_keymaps = []
 dynamic_classes = []
 
-# --- ЛОГИКА ПЕРЕМЕННЫХ ---
-
-def update_step_logic(self, context):
-    target_info = None
-    # Ищем info скрипта, которому принадлежит это свойство
-    for root, dirs, files in os.walk(BASE_DIR):
-        for f in files:
-            if f.endswith('.py') and not f.startswith('__'):
-                data = get_script_data(os.path.join(root, f))
-                if data.get('prop_id') == self.name:
-                    target_info = data
-                    break
-        if target_info: break
-
-    if target_info:
-        stype = target_info.get('type', 'input_float')
-        p_min = target_info.get('min', -10000.0)
-        p_max = target_info.get('max', 10000.0)
-        
-        # 1. Сначала Clamp (ограничение диапазона)
-        new_val = max(p_min, min(p_max, self.value))
-        
-        # 2. Логика округления в зависимости от типа
-        if stype in {'input_int', 'int'}:
-            new_val = float(round(new_val))
-        elif stype == 'input_custom':
-            if new_val > 1.0 or new_val < -1.0:
-                new_val = float(round(new_val))
-        # Для input_float оставляем как есть (дроби)
-
-        # 3. Записываем только если значение изменилось
-        if self.value != new_val:
-            self.value = new_val
-
-
-
-
-class MyAddonVariable(bpy.types.PropertyGroup):
-    value: bpy.props.FloatProperty(
-        default=-999.0, 
-        precision=3, # Увеличим точность для float
-        min=-10000.0, # Расширим границы хранилища
-        max=10000.0,
-        update=update_step_logic # Старая логика останется для совместимости
-    )
-
-
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+def get_subfolders():
+    """Возвращает список полных путей ко всем подпапкам в корне аддона"""
+    return [os.path.join(BASE_DIR, d) for d in os.listdir(BASE_DIR) 
+            if os.path.isdir(os.path.join(BASE_DIR, d)) and not d.startswith(('.', '__'))]
 
 def get_sort_key(name):
     match = re.match(r'^(\d+(\.\d+)?)', name)
@@ -89,6 +47,41 @@ def get_script_data(filepath):
     except: pass
     return data
 
+# --- ЛОГИКА ПЕРЕМЕННЫХ ---
+
+def update_step_logic(self, context):
+    target_info = None
+    # ИСПРАВЛЕНО: Сканируем только подпапки, исключая корень (BASE_DIR)
+    for folder in get_subfolders():
+        for root, dirs, files in os.walk(folder):
+            for f in files:
+                if f.endswith('.py') and not f.startswith('__'):
+                    data = get_script_data(os.path.join(root, f))
+                    if data.get('prop_id') == self.name:
+                        target_info = data
+                        break
+            if target_info: break
+        if target_info: break
+
+    if target_info:
+        stype = target_info.get('type', 'input_float')
+        p_min = target_info.get('min', -10000.0)
+        p_max = target_info.get('max', 10000.0)
+        new_val = max(p_min, min(p_max, self.value))
+        if stype in {'input_int', 'int'}:
+            new_val = float(round(new_val))
+        elif stype == 'input_custom':
+            if new_val > 1.0 or new_val < -1.0:
+                new_val = float(round(new_val))
+        if self.value != new_val:
+            self.value = new_val
+
+class MyAddonVariable(bpy.types.PropertyGroup):
+    value: bpy.props.FloatProperty(
+        default=-999.0, precision=3, min=-10000.0, max=10000.0,
+        update=update_step_logic
+    )
+
 # --- ОПЕРАТОРЫ ---
 
 class MY_OT_RunExternalScript(bpy.types.Operator):
@@ -107,22 +100,14 @@ class MY_OT_RunExternalScript(bpy.types.Operator):
     def execute(self, context):
         if os.path.exists(self.path):
             info = get_script_data(self.path)
-            # Запрещаем запуск для типов int и text
             if info.get('type') in {'int', 'text'}: return {'FINISHED'}
-            
-        if os.path.exists(self.path):
-            info = get_script_data(self.path)
-            if info.get('type') == 'int': return {'FINISHED'}
             
             vars_dict = {item.name: item.value for item in context.scene.my_addon_vars}
             class PropsProxy:
                 def __init__(self, d): self.__dict__ = d
             global_dict = {
-                'bpy': bpy, 
-                'context': context, 
-                'props': PropsProxy(vars_dict), 
-                '__file__': self.path,
-                'report': self.report # <-- Добавьте эту строку
+                'bpy': bpy, 'context': context, 'props': PropsProxy(vars_dict), 
+                '__file__': self.path, 'report': self.report
             }
             try:
                 with open(self.path, 'r', encoding='utf-8') as f:
@@ -152,17 +137,20 @@ def register_shortcuts():
     kc = wm.keyconfigs.addon
     if not kc: return
     km = kc.keymaps.new(name='3D View', space_type='VIEW_3D')
-    for root, dirs, files in os.walk(BASE_DIR):
-        for f in files:
-            if f.endswith('.py') and not f.startswith('__'):
-                path = os.path.join(root, f)
-                data = get_script_data(path)
-                if data.get('shortcut'):
-                    p = data['shortcut'].split()
-                    kmi = km.keymap_items.new("lazy_scripts.run_script", type=p[-1].upper(), value='PRESS', 
-                                              ctrl='Ctrl' in p, alt='Alt' in p, shift='Shift' in p)
-                    kmi.properties.path = path
-                    addon_keymaps.append((km, kmi))
+    
+    # ИСПРАВЛЕНО: Сканируем только подпапки
+    for folder in get_subfolders():
+        for root, dirs, files in os.walk(folder):
+            for f in files:
+                if f.endswith('.py') and not f.startswith('__'):
+                    path = os.path.join(root, f)
+                    data = get_script_data(path)
+                    if data.get('shortcut'):
+                        p = data['shortcut'].split()
+                        kmi = km.keymap_items.new("lazy_scripts.run_script", type=p[-1].upper(), value='PRESS', 
+                                                  ctrl='Ctrl' in p, alt='Alt' in p, shift='Shift' in p)
+                        kmi.properties.path = path
+                        addon_keymaps.append((km, kmi))
 
 def unregister_shortcuts():
     for km, kmi in addon_keymaps:
@@ -194,7 +182,6 @@ def draw_dynamic_section(self, context):
             stype = info.get('type')
             p_id = info.get('prop_id')
             
-            # --- ТЕКСТОВЫЕ МЕТКИ ---
             if stype == 'text':
                 txt = info.get('name', "")
                 align_type = info.get('align', 'LEFT').upper()
@@ -212,30 +199,20 @@ def draw_dynamic_section(self, context):
                 else: content_col.label(text=txt)
                 if align_type in {'CENTER', 'LEFT'}: main_row.column()
 
-            # --- ПОЛЯ ВВОДА ---
             elif stype in {'input_custom', 'input_int', 'input_float', 'int'} and p_id:
                 var_item = context.scene.my_addon_vars.get(p_id)
                 if var_item:
                     sub = row.row(align=True)
-                    # Просто отображаем, update_step_logic сама всё поправит при изменении
                     sub.prop(var_item, "value", text=info.get('name', ""), slider=False)
-                    
                     if info.get('description'):
                         help_ico = sub.operator("lazy_scripts.run_script", text="", icon='HELP', emboss=False)
                         help_ico.path = p
-
-
                 else: row.label(text=f"Init: {info['name']}")
             
-            # --- КНОПКИ ---
             else:
                 op = row.operator("lazy_scripts.run_script", text=info['name'], icon=info.get('icon', 'NONE'))
                 op.path = p
-                
         i += len(row_paths)
-
-
-
 
 class MY_PT_Settings(bpy.types.Panel):
     bl_label = "Lazy Settings & Debug"
@@ -252,49 +229,42 @@ class MY_PT_Settings(bpy.types.Panel):
 def sync_addon_properties():
     if not hasattr(bpy.context, "scene") or bpy.context.scene is None: return 0.5
     scene = bpy.context.scene
-    # Добавляем новые типы в список для регистрации
     input_types = {'int', 'input_custom', 'input_int', 'input_float'}
     
-    for root, dirs, files in os.walk(BASE_DIR):
-        for f in files:
-            if f.endswith('.py'):
-                data = get_script_data(os.path.join(root, f))
-                p_id = data.get('prop_id')
-                # Теперь проверяем вхождение в расширенный список типов
-                if data.get('type') in input_types and p_id:
-                    if p_id not in scene.my_addon_vars:
-                        item = scene.my_addon_vars.add()
-                        item.name = p_id
-                        item.value = data.get('default', 0.0)
-                    elif scene.my_addon_vars[p_id].value == -999:
-                        scene.my_addon_vars[p_id].value = data.get('default', 0.0)
+    # ИСПРАВЛЕНО: Сканируем только подпапки
+    for folder in get_subfolders():
+        for root, dirs, files in os.walk(folder):
+            for f in files:
+                if f.endswith('.py') and not f.startswith('__'):
+                    data = get_script_data(os.path.join(root, f))
+                    p_id = data.get('prop_id')
+                    if data.get('type') in input_types and p_id:
+                        if p_id not in scene.my_addon_vars:
+                            item = scene.my_addon_vars.add()
+                            item.name = p_id
+                            item.value = data.get('default', 0.0)
+                        elif scene.my_addon_vars[p_id].value == -999:
+                            scene.my_addon_vars[p_id].value = data.get('default', 0.0)
     return None
-
 
 @bpy.app.handlers.persistent
 def on_load_post_handler(dummy1, dummy2=None):
     bpy.app.timers.register(sync_addon_properties, first_interval=0.1)
 
-# --- РЕГИСТРАЦИЯ ---
-
-# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТРИСОВКИ ЗАГОЛОВКА ---
 def draw_sub_header(self, context):
     layout = self.layout
-    # Берем очищенное имя, которое мы сохранили в классе
     label = getattr(self, "base_label", "")
     prop_id = getattr(self, "linked_prop", None)
-    
     if prop_id:
         var_item = context.scene.my_addon_vars.get(prop_id)
         if var_item:
-            # Формат: Имя (1.00)
             label = f"{label} ({var_item.value:.2f})"
         else:
             label = f"{label} (...)"
-            
     layout.label(text=label)
 
-# --- РЕГИСТРАЦИЯ С ИСПРАВЛЕНИЕМ ЦВЕТА/ДУБЛЕЙ ---
+# --- РЕГИСТРАЦИЯ ---
+
 def register():
     bpy.utils.register_class(MyAddonVariable)
     bpy.utils.register_class(MY_OT_RunExternalScript)
@@ -306,36 +276,30 @@ def register():
     
     if not os.path.exists(BASE_DIR): return
     
+    # ИСПРАВЛЕНО: Теперь корень (BASE_DIR) используется ТОЛЬКО для поиска папок. 
+    # Файлы .py в корне автоматически игнорируются, так как мы берем только isdir()
     main_folders = sorted([d for d in os.listdir(BASE_DIR) if os.path.isdir(os.path.join(BASE_DIR, d)) and not d.startswith(('.', '__'))], key=get_sort_key)
     
     for folder in main_folders:
         folder_path = os.path.join(BASE_DIR, folder)
         safe_folder = re.sub(r'\W+', '_', folder)
         main_id = f"MY_PT_{safe_folder}"
-        
         main_prop_match = re.search(r'\{(.+?)\}', folder)
         main_target_prop = main_prop_match.group(1) if main_prop_match else None
         main_clean_label = clean_display_name(re.sub(r'\{.+?\}', '', folder)).strip()
 
-        # ИСПРАВЛЕНИЕ: bl_label = "" убирает белый системный текст
         main_cls = type(main_id, (bpy.types.Panel,), {
-            "bl_label": "", 
-            "bl_idname": main_id,
-            "bl_space_type": 'VIEW_3D',
-            "bl_region_type": 'UI',
-            "bl_category": "Lazy Scripts",
-            "base_label": main_clean_label,
-            "linked_prop": main_target_prop,
-            "draw_header": draw_sub_header, 
-            "draw": lambda s, c: None
+            "bl_label": "", "bl_idname": main_id, "bl_space_type": 'VIEW_3D', "bl_region_type": 'UI',
+            "bl_category": "Lazy Scripts", "base_label": main_clean_label, "linked_prop": main_target_prop,
+            "draw_header": draw_sub_header, "draw": lambda s, c: None
         })
-
         bpy.utils.register_class(main_cls)
         dynamic_classes.append(main_cls)
         
         content = []
         for item in os.listdir(folder_path):
             path = os.path.join(folder_path, item)
+            # Внутри папок файлы .py по-прежнему разрешены
             content.append({'name': item, 'path': path, 'is_dir': os.path.isdir(path), 'key': get_sort_key(item)})
         content.sort(key=lambda x: x['key'])
         
@@ -346,36 +310,32 @@ def register():
             if not item['is_dir']:
                 file_group = []
                 while i < len(content) and not content[i]['is_dir']:
-                    file_group.append(content[i]['path']); i += 1
+                    # Проверяем расширение
+                    if content[i]['path'].endswith('.py'):
+                        file_group.append(content[i]['path'])
+                    i += 1
                 
-                g_id = f"MY_PT_G_{safe_folder}_{group_idx}"
-                g_cls = type(g_id, (bpy.types.Panel,), {
-                    "bl_label": "", "bl_idname": g_id, "bl_parent_id": main_id,
-                    "bl_space_type": 'VIEW_3D', "bl_region_type": 'UI',
-                    "bl_options": {'HIDE_HEADER'}, "file_paths": file_group, "draw": draw_dynamic_section
-                })
-                bpy.utils.register_class(g_cls); dynamic_classes.append(g_cls); group_idx += 1
+                if file_group:
+                    g_id = f"MY_PT_G_{safe_folder}_{group_idx}"
+                    g_cls = type(g_id, (bpy.types.Panel,), {
+                        "bl_label": "", "bl_idname": g_id, "bl_parent_id": main_id,
+                        "bl_space_type": 'VIEW_3D', "bl_region_type": 'UI',
+                        "bl_options": {'HIDE_HEADER'}, "file_paths": file_group, "draw": draw_dynamic_section
+                    })
+                    bpy.utils.register_class(g_cls); dynamic_classes.append(g_cls); group_idx += 1
             else:
                 found_prop = re.search(r'\{(.+?)\}', item['name'])
                 target_prop = found_prop.group(1) if found_prop else None
                 clean_label = clean_display_name(re.sub(r'\{.+?\}', '', item['name'])).strip()
-
                 safe_name = re.sub(r'\W+', '_', item['name']).strip('_')
                 sub_id = f"MY_PT_{safe_name}"
 
-                # ИСПРАВЛЕНИЕ: bl_label = "" также для подпанелей
                 sub_cls = type(sub_id, (bpy.types.Panel,), {
-                    "bl_label": "", 
-                    "base_label": clean_label,
-                    "linked_prop": target_prop,
-                    "bl_idname": sub_id,
-                    "bl_parent_id": main_id,
-                    "bl_space_type": 'VIEW_3D',
-                    "bl_region_type": 'UI',
+                    "bl_label": "", "base_label": clean_label, "linked_prop": target_prop,
+                    "bl_idname": sub_id, "bl_parent_id": main_id, "bl_space_type": 'VIEW_3D', "bl_region_type": 'UI',
                     "bl_options": {'DEFAULT_CLOSED'},
                     "file_paths": [os.path.join(item['path'], f) for f in os.listdir(item['path']) if f.endswith('.py')],
-                    "draw_header": draw_sub_header,
-                    "draw": draw_dynamic_section
+                    "draw_header": draw_sub_header, "draw": draw_dynamic_section
                 })
                 bpy.utils.register_class(sub_cls); dynamic_classes.append(sub_cls); i += 1
     
@@ -383,35 +343,22 @@ def register():
     bpy.app.timers.register(sync_addon_properties, first_interval=0.1)
     register_shortcuts()
 
-
 def unregister():
     unregister_shortcuts()
     if on_load_post_handler in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post_handler)
-    
     try: bpy.utils.unregister_class(MY_PT_Settings)
     except: pass
-    
     for cls in reversed(dynamic_classes):
         try: bpy.utils.unregister_class(cls)
         except: pass
     dynamic_classes.clear()
-    
     for cls in [MY_OT_RefreshAddon, MY_OT_RunExternalScript, MyAddonVariable]:
         try: bpy.utils.unregister_class(cls)
         except: pass
-        
     if hasattr(bpy.types.Scene, "my_addon_vars"):
         try: del bpy.types.Scene.my_addon_vars
         except: pass
 
 if __name__ == "__main__":
     register()
-
-
-
-
-
-
-
-
