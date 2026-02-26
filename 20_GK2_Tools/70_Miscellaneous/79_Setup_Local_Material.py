@@ -1,6 +1,6 @@
 info = {
     "name": "Init Material",
-    "description": "Поиск текстур в любых папках '#' и синхронизация с GN",
+    "description": "Глубокий поиск текстур в папках # и их подпапках",
     "icon": 'MATERIAL',
     "type": "button",
     "shortcut": ""
@@ -9,35 +9,39 @@ info = {
 import os
 import bpy
 
-def find_texture_recursive(base_path, filename):
-    """Рекурсивно ищет файл в папках, начинающихся с #"""
-    for root, dirs, files in os.walk(base_path):
-        # Оставляем для обхода только те папки, которые начинаются с #
-        # (Проверяем только текущий уровень dirs, чтобы os.walk шел дальше)
-        dirs[:] = [d for d in dirs if d.startswith("#")]
-        
-        if filename in files:
-            return os.path.join(root, filename)
+def find_texture_deep(base_path, filename):
+    """
+    Сканирует корень проекта. Если находит папку на #, 
+    полностью обыскивает её содержимое (включая все подпапки).
+    """
+    for item in os.listdir(base_path):
+        item_path = os.path.join(base_path, item)
+        if os.path.isdir(item_path) and item.startswith("#"):
+            # Нашли входную точку (например, #Gardening), ищем внутри неё всё
+            for root, dirs, files in os.walk(item_path):
+                if filename in files:
+                    return os.path.join(root, filename)
     return None
 
 def run():
+    # 1. Валидация окружения
     if not bpy.data.is_saved:
         report({'ERROR'}, "Сначала сохраните .blend файл!")
         return
 
-    obj = context.active_object # Используем проброшенный context из аддона
+    obj = context.active_object 
     source_mat = bpy.data.materials.get("#Default Material")
 
     if not (obj and obj.type == 'MESH'):
+        report({'WARNING'}, "Выберите меш-объект")
         return
     
     if not source_mat:
-        report({'ERROR'}, "'#Default Material' не найден.")
+        report({'ERROR'}, "Материал '#Default Material' не найден")
         return
 
+    # 2. Пересоздание локального материала
     target_name = obj.name
-    
-    # --- 1. Работа с материалом ---
     old_mat = bpy.data.materials.get(target_name)
     if old_mat:
         bpy.data.materials.remove(old_mat, do_unlink=True)
@@ -50,10 +54,10 @@ def run():
     else:
         obj.data.materials.append(new_mat)
 
-    # --- 2. Поиск текстуры (Новая логика) ---
+    # 3. Поиск текстуры по маске f"{obj.name}.png"
     project_dir = os.path.dirname(bpy.data.filepath)
     img_name = f"{target_name}.png"
-    img_path = find_texture_recursive(project_dir, img_name)
+    img_path = find_texture_deep(project_dir, img_name)
 
     new_mat.use_nodes = True
     nodes = new_mat.node_tree.nodes
@@ -69,7 +73,11 @@ def run():
 
     loaded_image = None
     if img_path:
-        # Очистка старой версии из памяти Blender
+        # Репорт найденного пути
+        relative_path = os.path.relpath(img_path, project_dir)
+        report({'INFO'}, f"Найдено: {relative_path}")
+        
+        # Обновляем текстуру в памяти
         old_img = bpy.data.images.get(img_name)
         if old_img:
             bpy.data.images.remove(old_img, do_unlink=True)
@@ -77,30 +85,28 @@ def run():
         try:
             loaded_image = bpy.data.images.load(img_path)
             tex_node.image = loaded_image
-            loaded_image.reload()
-            print(f"Найдено: {img_path}")
         except Exception as e:
-            print(f"Ошибка загрузки: {e}")
+            report({'ERROR'}, f"Ошибка загрузки: {e}")
     else:
-        print(f"Файл {img_name} не найден ни в одной папке #...")
+        report({'WARNING'}, f"Файл {img_name} не найден в папках #...")
 
-    # --- 3. Синхронизация с Geometry Nodes ---
+    # 4. Синхронизация с Geometry Nodes (Blender 4.x)
     gn_mod = next((m for m in obj.modifiers if m.type == 'NODES' and m.node_group), None)
     
-    if gn_mod and (loaded_image or img_path):
-        # Если картинка не была загружена выше (не было файла), создаем пустую
-        image = loaded_image
+    if gn_mod:
+        image = loaded_image if loaded_image else bpy.data.images.get(img_name)
         if not image:
             image = bpy.data.images.new(img_name, 1024, 1024)
 
         target_id = None
         try:
-            # Поиск идентификатора сокета в 4.x
+            # Ищем сокет по имени в интерфейсе нод-группы
             for item in gn_mod.node_group.interface.items_tree:
                 if item.name == "Texture Image":
                     target_id = item.identifier
                     break
         except:
+            # Фолбэк для прямой записи в кастомные свойства модификатора
             for key in gn_mod.keys():
                 if "Texture Image" in key:
                     target_id = key
