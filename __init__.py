@@ -7,7 +7,7 @@ import textwrap
 bl_info = {
     "name": "Lazy Scripts",
     "author": "treety & Gemini (Google AI)",
-    "version": (3, 4, 3), # Обновил версию
+    "version": (3, 4, 4), # Обновил версию
     "blender": (4, 0, 0),
     "category": "Interface",
 }
@@ -362,3 +362,4 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
