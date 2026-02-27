@@ -73,7 +73,7 @@ def run():
                     tex_found += 1
                     log(f"  Текстура восстановлена: {fname}")
 
-    # --- ЭТАП 2: РЕМАП НА GK_2 ---
+    # --- ЭТАП 2: РЕМАП НА GK_2 Library ---
     log("Этап 2: Ремапинг на библиотеку GK_2...")
     main_lib = next((l for l in bpy.data.libraries 
                      if l.filepath.startswith("//") and ".." not in l.filepath and "GK_2 Library" in l.name), None)
@@ -133,3 +133,4 @@ def run():
     context.area.tag_redraw()
 
 run()
+
